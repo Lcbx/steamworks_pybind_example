@@ -1,6 +1,7 @@
 import random
 import sys
 from collections import deque
+from dataclasses import dataclass
 
 import pygame
 
@@ -51,7 +52,6 @@ class Snake:
 	def __init__(self, body, direction, color, head_color, name):
 		self.body = deque(body)
 		self.direction = direction
-		self.next_direction = direction
 		self.color = color
 		self.head_color = head_color
 		self.name = name
@@ -64,13 +64,12 @@ class Snake:
 
 	def set_direction(self, direction):
 		if not opposite(direction, self.direction):
-			self.next_direction = direction
+			self.direction = direction
 
 	def move(self, grow=False):
 		if not self.alive:
 			return
 
-		self.direction = self.next_direction
 		new_head = add_pos(self.head, self.direction)
 		self.body.appendleft(new_head)
 
@@ -174,12 +173,81 @@ def draw_centered_text(screen, font, text, y, color=TEXT):
 	screen.blit(surf, rect)
 
 
-def run_game(screen):
-	
+def run_game(screen, lobby):
+	steam.SteamNetworkingUtils().InitRelayNetworkAccess()
+	relay = steam.SteamNetworkingMessages()
+	members = lobby.members
+
+	is_host = lobby.owner_id == local_id
+
 	p1, p2, food, game_over = reset_game()
+
+	# problem : how do we assign player places ?
+	# easier would be to just sort by steam id
+	# for now we just swap snakes for host
+	if is_host:
+		p1, p2 = p2, p1
+
+	p1_name = members[local_id]
+	p2_name = 'Guest'
+
+	peer = steam.SteamNetworkingIdentity()
+
+	def sendState():
+		values = [*p1.head, *p1.direction]  # head_x, head_y, dir_x, dir_y
+		payload = ",".join(map(str, values)).encode()
+		buf = ctypes.create_string_buffer(payload)
+		# peer, packet*, packet size, communication flags, channel 
+		result = relay.SendMessageToUser(
+			peer,
+			ctypes.addressof(buf),
+			len(payload),
+			steam.nSteamNetworkingSend_ReliableNoNagle,
+			0,
+		)
+
+	def receiveState():
+		# retrieve peer state
+		recv_msgs = (ctypes.c_void_p * 16)()
+		while True:
+			n = relay.ReceiveMessagesOnChannel(0, ctypes.addressof(recv_msgs), len(recv_msgs))
+			if n <= 0:break
+
+			for i in range(n):
+				msg_ptr = recv_msgs[i]
+				msg = steam.SteamNetworkingMessage.from_ptr(msg_ptr)
+
+				data = steam.to_bytes(msg.pData, msg.cbSize)
+				text = data.decode()
+				head_x, head_y, dir_x, dir_y = map(int, text.split(","))
+
+				# TODO: check head is where it is expected to be
+				p2.body[0] = (head_x, head_y)
+				p2.direction = (dir_x, dir_y)
+
+				#msg.Release()
+
+	for id, name in members.items():
+		if id == local_id: continue
+		p2_name = name
+		peer.SetSteamID64(id)
+		sendState()
 
 	while True:
 		clock.tick(FPS)
+
+		if not game_over:
+			p1_will_eat = add_pos(p1.head, p1.direction) == food
+			p2_will_eat = add_pos(p2.head, p2.direction) == food
+
+			p1.move(grow=p1_will_eat)
+			p2.move(grow=p2_will_eat)
+
+			if p1_will_eat or p2_will_eat:
+				food = random_empty_cell([p1, p2])
+
+			game_over = resolve_collisions(p1, p2)
+
 
 		for event in pygame.event.get():
 			if event.type == pygame.QUIT:
@@ -212,17 +280,8 @@ def run_game(screen):
 				elif event.key == pygame.K_RIGHT:
 					p2.set_direction((1, 0))
 
-		if not game_over:
-			p1_will_eat = add_pos(p1.head, p1.next_direction) == food
-			p2_will_eat = add_pos(p2.head, p2.next_direction) == food
-
-			p1.move(grow=p1_will_eat)
-			p2.move(grow=p2_will_eat)
-
-			if p1_will_eat or p2_will_eat:
-				food = random_empty_cell([p1, p2])
-
-			game_over = resolve_collisions(p1, p2)
+		sendState()
+		receiveState()
 
 		screen.fill(BG)
 		draw_grid(screen)
@@ -230,15 +289,15 @@ def run_game(screen):
 		p1.draw(screen)
 		p2.draw(screen)
 		
-		score_text = f"P1: {p1.score}   P2: {p2.score}"
+		score_text = f"{p1_name}: {p1.score}   {p2_name}: {p2.score}"
 		surf = font.render(score_text, True, TEXT)
 		screen.blit(surf, (12, 8))
 
 		if game_over:
 			if p1.alive and not p2.alive:
-				msg = "Player 1 wins!"
+				msg = f"{p1_name} wins!"
 			elif p2.alive and not p1.alive:
-				msg = "Player 2 wins!"
+				msg = f"{p2_name} wins!"
 			else:
 				msg = "Draw!"
 
@@ -261,7 +320,11 @@ import time
 MAX_LOBBY_MEMBERS = 2
 
 def quit_game():
-	if lobby_id: steam.SteamMatchmaking().LeaveLobby(lobby_id)
+	global lobby_id
+	if lobby_id and (mm := steam.SteamMatchmaking()):
+		mm.LeaveLobby(lobby_id)
+		lobby_id = None
+	steam.shutdown()
 	pygame.quit()
 	sys.exit()
 
@@ -315,16 +378,21 @@ def get_lobby_members(lobby_id):
 	friends = steam.SteamFriends()
 
 	count = matchmaking.GetNumLobbyMembers(lobby_id)
-	members = []
+	members = {}
 
 	for i in range(count):
 		member_id = matchmaking.GetLobbyMemberByIndex(lobby_id, i)
 		member_name = friends.GetFriendPersonaName(member_id)
-
-		members.append( (member_id, member_name) )
+		members[member_id] = member_name
 
 	return members
 
+@dataclass
+class Lobby:
+	lobby_id : int
+	owner_id : int
+	name     : str
+	members  : dict
 
 def lobby_to_dict(lobby_id, default_name="Steam lobby"):
 	matchmaking = steam.SteamMatchmaking()
@@ -334,12 +402,7 @@ def lobby_to_dict(lobby_id, default_name="Steam lobby"):
 	name = matchmaking.GetLobbyData(lobby_id, "name")
 	if not name: name = default_name
 
-	return {
-		"lobby_id": int(lobby_id),
-		"name": name,
-		"owner_id": owner_id,
-		"members": get_lobby_members(lobby_id),
-	}
+	return Lobby(int(lobby_id), owner_id, name, get_lobby_members(lobby_id) )
 
 
 def create_lobby():
@@ -447,15 +510,23 @@ def run_join_lobby_input(screen):
 
 
 def run_lobby_room(screen, lobby):
-	local_id = steam.SteamUser().GetSteamID()
+	matchmaking = steam.SteamMatchmaking()
+	lobby_id = lobby.lobby_id
+	owner_id = lobby.owner_id
+
+	is_host = owner_id == local_id
+	owner_ready = False
 
 	def update_members(LobbyChatUpdate_t):
 		nonlocal lobby
-		lobby_id = LobbyChatUpdate_t.ulSteamIDLobby
-		#lobby_id = lobby['lobby_id']
-		lobby["members"] = get_lobby_members(lobby_id)
+		lobby.members = get_lobby_members(lobby_id)
 
-	updater = steam.OnLobbyChatUpdate(update_members)
+	def update_ready(LobbyDataUpdate_t):
+		nonlocal owner_ready
+		owner_ready = matchmaking.GetLobbyMemberData(lobby_id, owner_id, 'ready');
+
+	u1 = steam.OnLobbyChatUpdate(update_members)
+	u2 = steam.OnLobbyDataUpdate(update_ready)
 
 	while True:
 		clock.tick(FPS)
@@ -465,35 +536,39 @@ def run_lobby_room(screen, lobby):
 			if event.type == pygame.QUIT:
 				quit_game()
 
+			if owner_ready:
+				return lobby
+
 			if event.type != pygame.KEYDOWN:
 				continue
 
 			if event.key == pygame.K_ESCAPE:
 				return None
 
-			if event.key == pygame.K_RETURN:
-				return lobby
+			if is_host and event.key == pygame.K_RETURN:
+				matchmaking.SetLobbyMemberData(lobby_id, 'ready', 'True');
 
 		screen.fill(BG)
 
-		role = "Host" if lobby["owner_id"] == local_id else "Client"
+		role = "Host" if is_host else "Client"
 
 		draw_centered_text(screen, big_font, "Lobby", 90)
-		draw_centered_text(screen, font, f"Lobby ID: {lobby['lobby_id']}   Role: {role}", 145)
+		draw_centered_text(screen, font, f"Lobby ID: {lobby_id}   Role: {role}", 145)
 
 		panel = pygame.Rect(SCREEN_WIDTH // 2 - 190, 230, 380, 220)
 		pygame.draw.rect(screen, GRID, panel, border_radius=8)
 
 		draw_text(screen, font, "Members", panel.x + 24, panel.y + 22)
 
-		for i, member in enumerate(lobby["members"]):
-			suffix = " [host]" if member[0] == lobby["owner_id"] else ""
-			color = P1_HEAD if member[0] == local_id else TEXT
+		for i, member in enumerate(lobby.members.items()):
+			id, name = member
+			suffix = " [host]" if id == owner_id else ""
+			color = P1_HEAD if id == local_id else TEXT
 
 			draw_text(
 				screen,
 				font,
-				f"{i + 1}. {member[1]}{suffix}",
+				f"{i + 1}. {name}{suffix}",
 				panel.x + 36,
 				panel.y + 62 + i * 34,
 				color,
@@ -556,6 +631,8 @@ def run_lobby_menu(screen):
 
 				elif choice == "Quit":
 					quit_game()
+
+
 		screen.fill(BG)
 
 		draw_centered_text(screen, big_font, "Two Player Snake", 120)
@@ -582,23 +659,27 @@ def run_lobby_menu(screen):
 # Main
 # -----------------------------
 def main():
-	global clock, font, big_font
+	global clock, font, big_font, local_id
+	try:
+		steam.init()
+		pygame.init()
+		pygame.display.set_caption("Two Player Snake")
 
-	steam.init()
-	pygame.init()
-	pygame.display.set_caption("Two Player Snake")
+		screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT))
+		clock = pygame.time.Clock()
 
-	screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT))
-	clock = pygame.time.Clock()
+		font = pygame.font.SysFont(None, 30)
+		big_font = pygame.font.SysFont(None, 56)
 
-	font = pygame.font.SysFont(None, 30)
-	big_font = pygame.font.SysFont(None, 56)
+		local_id = steam.SteamUser().GetSteamID()
+		lobby = run_lobby_menu(screen)
 
-	lobby = run_lobby_menu(screen)
+		run_game(screen, lobby)
 
-	run_game(screen)
-
-	steam.shutdown()
+	except Exception as ex:
+		print('Error:', ex)
+	finally:
+		quit_game()
 
 
 if __name__ == "__main__":
