@@ -1,9 +1,12 @@
 import random
 import sys
+import time
 from collections import deque
 from dataclasses import dataclass
 
 import pygame
+import steamworks as steam
+import ctypes
 
 
 # -----------------------------
@@ -186,10 +189,11 @@ def run_game(screen, lobby):
 		and availability != steam.ESteamNetworkingAvailability.Current
 		and time.time() < t):
 		time.sleep(0.05)
-	print("availability", availability, status.debugMsg)
+	print("P2P availability", availability, status.debugMsg)
 
 	relay = steam.SteamNetworkingMessages()
 	members = lobby.members
+	is_multiplayer = len(members) > 1 
 
 	is_host = lobby.owner_id == local_id
 
@@ -200,12 +204,11 @@ def run_game(screen, lobby):
 
 	peer = steam.SteamNetworkingIdentity()
 
-	def accept_session(P2PSessionRequest):
-		print('accept_session')
-		id = P2PSessionRequest.steamIDRemote
-		if id in members: relay.AcceptSessionWithUser(id)
-
-	_ = steam.OnP2PSessionRequest(accept_session)
+	#def accept_session(P2PSessionRequest):
+	#	print('accept_session')
+	#	id = P2PSessionRequest.steamIDRemote
+	#	if id in members: relay.AcceptSessionWithUser(id)
+	#_ = steam.OnP2PSessionRequest(accept_session)
 
 	for id, name in members.items():
 		if id == local_id: continue
@@ -215,8 +218,58 @@ def run_game(screen, lobby):
 		assert not peer.IsInvalid()
 
 	recv_msgs = (ctypes.c_void_p * 16)()
+	def sync():
+		nonlocal recv_msgs, p1, p2, peer
+		# send state
+		values = [*p1.head, *p1.direction]  # head_x, head_y, dir_x, dir_y
+		payload = ",".join(map(str, values)).encode()
+		buf = ctypes.create_string_buffer(payload)
+		# peer, packet*, packet size, communication flags, channel 
+		result = relay.SendMessageToUser(
+			peer,
+			ctypes.addressof(buf),
+			len(payload),
+			steam.nSteamNetworkingSend_ReliableNoNagle,
+			0,
+		)
+		if result != steam.EResult.OK:
+			print("SendMessageToUser failed:", result)
+
+		# retrieve peer state
+		tot = 0
+		while True:
+			n = relay.ReceiveMessagesOnChannel(0, ctypes.addressof(recv_msgs), len(recv_msgs))
+			tot += n
+			if n <= 0:break
+
+			msg_ptr = recv_msgs[i]
+			msg = steam.SteamNetworkingMessage.from_ptr(msg_ptr)
+
+			data = steam.to_bytes(msg.pData, msg.cbSize)
+			text = data.decode()
+			print(text)
+			head_x, head_y, dir_x, dir_y = map(int, text.split(","))
+
+			p2.body[0] = (head_x, head_y)
+			p2.direction = (dir_x, dir_y)
+			#msg.Release()
+
+		print('received', tot, 'packets')
+		return tot
+
+	if is_multiplayer:
+		# wait for sync cycle to stabilize
+		# there might be a better way to do this ...
+		i = 0
+		while sync() != 1:
+			clock.tick(FPS)
+			draw_centered_text(screen, big_font, 'syncing' + '.' * i, SCREEN_HEIGHT // 2, TEXT)
+			i = (i+1)%6
+			pygame.display.flip()
+			steam.RunCallbacks()
+
 	while True:
-		print('', flush=True)
+		#print('', flush=True)
 		clock.tick(FPS)
 		steam.RunCallbacks()
 
@@ -254,50 +307,19 @@ def run_game(screen, lobby):
 				elif event.key == pygame.K_d:
 					p1.set_direction((1, 0))
 
-				# Player 2: Arrow keys
-				elif event.key == pygame.K_UP:
-					p2.set_direction((0, -1))
-				elif event.key == pygame.K_DOWN:
-					p2.set_direction((0, 1))
-				elif event.key == pygame.K_LEFT:
-					p2.set_direction((-1, 0))
-				elif event.key == pygame.K_RIGHT:
-					p2.set_direction((1, 0))
+				elif not is_multiplayer:
+					# Player 2: Arrow keys
+					if event.key == pygame.K_UP:
+						p2.set_direction((0, -1))
+					elif event.key == pygame.K_DOWN:
+						p2.set_direction((0, 1))
+					elif event.key == pygame.K_LEFT:
+						p2.set_direction((-1, 0))
+					elif event.key == pygame.K_RIGHT:
+						p2.set_direction((1, 0))
 
-		# send state
-		values = [*p1.head, *p1.direction]  # head_x, head_y, dir_x, dir_y
-		payload = ",".join(map(str, values)).encode()
-		buf = ctypes.create_string_buffer(payload)
-		# peer, packet*, packet size, communication flags, channel 
-		result = relay.SendMessageToUser(
-			peer,
-			ctypes.addressof(buf),
-			len(payload),
-			steam.nSteamNetworkingSend_ReliableNoNagle,
-			0,
-		)
-		if result != steam.EResult.OK:
-			print("SendMessageToUser failed:", result)
-
-		# retrieve peer state
-		while True:
-			n = relay.ReceiveMessagesOnChannel(0, ctypes.addressof(recv_msgs), len(recv_msgs))
-			print('received', n, 'packets')
-			if n <= 0:break
-
-			for i in range(n):
-				msg_ptr = recv_msgs[i]
-				msg = steam.SteamNetworkingMessage.from_ptr(msg_ptr)
-
-				data = steam.to_bytes(msg.pData, msg.cbSize)
-				text = data.decode()
-				print(text)
-				head_x, head_y, dir_x, dir_y = map(int, text.split(","))
-
-				p2.body[0] = (head_x, head_y)
-				p2.direction = (dir_x, dir_y)
-
-				#msg.Release()
+		if is_multiplayer:
+			sync()
 
 		screen.fill(BG)
 		draw_grid(screen)
@@ -328,10 +350,6 @@ def run_game(screen, lobby):
 # -----------------------------
 # Simple lobby menu
 # -----------------------------
-
-import steamworks as steam
-import ctypes
-import time
 
 MAX_LOBBY_MEMBERS = 2
 
@@ -589,8 +607,11 @@ def run_lobby_room(screen, lobby):
 				panel.y + 62 + i * 34,
 				color,
 			)
-
-		draw_centered_text(screen, font, "ENTER: start game   ESC: leave lobby", SCREEN_HEIGHT - 78)
+		
+		msg = "ESC: leave lobby"
+		if is_host:
+			msg += "   ENTER: start game"
+		draw_centered_text(screen, font, msg, SCREEN_HEIGHT - 78)
 
 		pygame.display.flip()
 
