@@ -93,7 +93,7 @@ class Snake:
 # -----------------------------
 # Game logic
 # -----------------------------
-def reset_game():
+def reset_game(is_host:bool):
 	p1 = Snake(
 		body=[(8, 12), (7, 12), (6, 12)],
 		direction=(1, 0),
@@ -109,6 +109,11 @@ def reset_game():
 		head_color=P2_HEAD,
 		name="Player 2",
 	)
+
+	# problem : how do we assign player places ?
+	# easier would be to just sort by steam id
+	# for now we just swap snakes for host
+	if is_host: p1, p2 = p2, p1
 
 	food = random_empty_cell([p1, p2])
 	return p1, p2, food, False
@@ -180,59 +185,18 @@ def run_game(screen, lobby):
 
 	is_host = lobby.owner_id == local_id
 
-	p1, p2, food, game_over = reset_game()
-
-	# problem : how do we assign player places ?
-	# easier would be to just sort by steam id
-	# for now we just swap snakes for host
-	if is_host:
-		p1, p2 = p2, p1
+	p1, p2, food, game_over = reset_game(is_host)
 
 	p1_name = members[local_id]
 	p2_name = 'Guest'
 
 	peer = steam.SteamNetworkingIdentity()
-
-	def sendState():
-		values = [*p1.head, *p1.direction]  # head_x, head_y, dir_x, dir_y
-		payload = ",".join(map(str, values)).encode()
-		buf = ctypes.create_string_buffer(payload)
-		# peer, packet*, packet size, communication flags, channel 
-		result = relay.SendMessageToUser(
-			peer,
-			ctypes.addressof(buf),
-			len(payload),
-			steam.nSteamNetworkingSend_ReliableNoNagle,
-			0,
-		)
-
-	def receiveState():
-		# retrieve peer state
-		recv_msgs = (ctypes.c_void_p * 16)()
-		while True:
-			n = relay.ReceiveMessagesOnChannel(0, ctypes.addressof(recv_msgs), len(recv_msgs))
-			if n <= 0:break
-
-			for i in range(n):
-				msg_ptr = recv_msgs[i]
-				msg = steam.SteamNetworkingMessage.from_ptr(msg_ptr)
-
-				data = steam.to_bytes(msg.pData, msg.cbSize)
-				text = data.decode()
-				print(text)
-				head_x, head_y, dir_x, dir_y = map(int, text.split(","))
-
-				# TODO: check head is where it is expected to be
-				p2.body[0] = (head_x, head_y)
-				p2.direction = (dir_x, dir_y)
-
-				#msg.Release()
+	recv_msgs = (ctypes.c_void_p * 16)()
 
 	for id, name in members.items():
 		if id == local_id: continue
 		p2_name = name
 		peer.SetSteamID64(id)
-		sendState()
 
 	while True:
 		clock.tick(FPS)
@@ -259,7 +223,7 @@ def run_game(screen, lobby):
 					quit_game()
 
 				if game_over and event.key == pygame.K_SPACE:
-					p1, p2, food, game_over = reset_game()
+					p1, p2, food, game_over = reset_game(is_host)
 
 				# Player 1: WASD
 				if event.key == pygame.K_w:
@@ -281,8 +245,38 @@ def run_game(screen, lobby):
 				elif event.key == pygame.K_RIGHT:
 					p2.set_direction((1, 0))
 
-		sendState()
-		receiveState()
+		# send state
+		values = [*p1.head, *p1.direction]  # head_x, head_y, dir_x, dir_y
+		payload = ",".join(map(str, values)).encode()
+		buf = ctypes.create_string_buffer(payload)
+		# peer, packet*, packet size, communication flags, channel 
+		result = relay.SendMessageToUser(
+			peer,
+			ctypes.addressof(buf),
+			len(payload),
+			steam.nSteamNetworkingSend_ReliableNoNagle,
+			0,
+		)
+
+		# retrieve peer state
+		while True:
+			n = relay.ReceiveMessagesOnChannel(0, ctypes.addressof(recv_msgs), len(recv_msgs))
+			if n <= 0:break
+
+			for i in range(n):
+				msg_ptr = recv_msgs[i]
+				msg = steam.SteamNetworkingMessage.from_ptr(msg_ptr)
+
+				data = steam.to_bytes(msg.pData, msg.cbSize)
+				text = data.decode()
+				print(text)
+				head_x, head_y, dir_x, dir_y = map(int, text.split(","))
+
+				# TODO: check head is where it is expected to be
+				p2.body[0] = (head_x, head_y)
+				p2.direction = (dir_x, dir_y)
+
+				#msg.Release()
 
 		screen.fill(BG)
 		draw_grid(screen)
@@ -411,7 +405,7 @@ def create_lobby():
 	matchmaking = steam.SteamMatchmaking()
 
 	call = matchmaking.CreateLobby(
-		steam.ELobbyType.FriendsOnly,
+		steam.ELobbyType.Public,
 		MAX_LOBBY_MEMBERS,
 	)
 
