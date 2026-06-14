@@ -193,6 +193,12 @@ def run_game(screen, lobby):
 	peer = steam.SteamNetworkingIdentity()
 	recv_msgs = (ctypes.c_void_p * 16)()
 
+	def accept_session(P2PSessionRequest_t):
+		id = P2PSessionRequest_t.steamIDRemote
+		if id in members: relay.AcceptSessionWithUser(id)
+
+	_ = steam.OnP2PSessionRequest(accept_session)
+
 	for id, name in members.items():
 		if id == local_id: continue
 		p2_name = name
@@ -258,6 +264,8 @@ def run_game(screen, lobby):
 			steam.nSteamNetworkingSend_ReliableNoNagle,
 			0,
 		)
+		if result != steam.EResult.OK:
+			print("SendMessageToUser failed:", result)
 
 		# retrieve peer state
 		while True:
