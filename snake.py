@@ -179,14 +179,14 @@ def draw_centered_text(screen, font, text, y, color=TEXT):
 
 
 def run_game(screen, lobby):
-	#netUtils = steam.SteamNetworkingUtils()
-	#status = steam.SteamRelayNetworkStatus()
-	#t = time.time() + 3.0
-	#while ((availability := netUtils.GetRelayNetworkStatus(status.ptr)) >= 0
-	#	and availability != steam.ESteamNetworkingAvailability.Current
-	#	and time.time() < t):
-	#	time.sleep(0.05)
-	#print("availability", availability, status.debugMsg)
+	netUtils = steam.SteamNetworkingUtils()
+	status = steam.SteamRelayNetworkStatus()
+	t = time.time() + 3.0
+	while ((availability := netUtils.GetRelayNetworkStatus(status.ptr)) >= 0
+		and availability != steam.ESteamNetworkingAvailability.Current
+		and time.time() < t):
+		time.sleep(0.05)
+	print("availability", availability, status.debugMsg)
 
 	relay = steam.SteamNetworkingMessages()
 	members = lobby.members
@@ -201,9 +201,9 @@ def run_game(screen, lobby):
 	peer = steam.SteamNetworkingIdentity()
 	recv_msgs = (ctypes.c_void_p * 16)()
 
-	def accept_session(P2PSessionRequest_t):
+	def accept_session(P2PSessionRequest):
 		print('accept_session')
-		id = P2PSessionRequest_t.steamIDRemote
+		id = P2PSessionRequest.steamIDRemote
 		if id in members: relay.AcceptSessionWithUser(id)
 
 	_ = steam.OnP2PSessionRequest(accept_session)
@@ -216,6 +216,7 @@ def run_game(screen, lobby):
 		assert not peer.IsInvalid()
 
 	while True:
+		print('', flush=True)
 		clock.tick(FPS)
 
 		if not game_over:
