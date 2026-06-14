@@ -219,6 +219,7 @@ def run_game(screen, lobby):
 
 				data = steam.to_bytes(msg.pData, msg.cbSize)
 				text = data.decode()
+				print(text)
 				head_x, head_y, dir_x, dir_y = map(int, text.split(","))
 
 				# TODO: check head is where it is expected to be
@@ -444,10 +445,10 @@ def join_lobby(lobby_name):
 		call = matchmaking.RequestLobbyList()
 		result = wait_call_result(call, steam.LobbyMatchList())
 
-		if result.nLobbiesMatching > 1:
+		if result.nLobbiesMatching < 1:
 			raise RuntimeError( f"Did not find lobby: {lobby_name}" )
 
-		lobby_id = matchmaking.GetLobbyByIndex(i)
+		lobby_id = matchmaking.GetLobbyByIndex(0)
 
 	call = matchmaking.JoinLobby(lobby_id)
 	result = wait_call_result(call, steam.LobbyEnter())
@@ -532,12 +533,12 @@ def run_lobby_room(screen, lobby):
 		clock.tick(FPS)
 		steam.RunCallbacks()
 
+		if owner_ready: return lobby
+
 		for event in pygame.event.get():
 			if event.type == pygame.QUIT:
 				quit_game()
 
-			if owner_ready:
-				return lobby
 
 			if event.type != pygame.KEYDOWN:
 				continue
