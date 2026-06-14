@@ -191,6 +191,7 @@ def run_game(screen, lobby):
 		time.sleep(0.05)
 	print("P2P availability", availability, status.debugMsg)
 
+	mm = steam.SteamMatchmaking()
 	relay = steam.SteamNetworkingMessages()
 	members = lobby.members
 	is_multiplayer = len(members) > 1 
@@ -198,17 +199,25 @@ def run_game(screen, lobby):
 	is_host = lobby.owner_id == local_id
 
 	p1, p2, food, game_over = reset_game(is_host)
+	def reset():
+		nonlocal p1, p2, food, game_over
+		p1, p2, food, game_over = reset_game(is_host)
 
 	p1_name = members[local_id]
 	p2_name = 'Guest'
 
 	peer = steam.SteamNetworkingIdentity()
 
+	#payload = b'HI everyone'
+	#buf = ctypes.create_string_buffer(payload)
+	#ok = mm.SendLobbyChatMsg(lobby_id, ctypes.addressof(buf), len(payload))
+	#print("hello:", ok)
+
 	#def accept_session(P2PSessionRequest):
 	#	print('accept_session')
 	#	id = P2PSessionRequest.steamIDRemote
 	#	if id in members: relay.AcceptSessionWithUser(id)
-	#_ = steam.OnP2PSessionRequest(accept_session)
+	#_s = steam.OnP2PSessionRequest(accept_session)
 
 	for id, name in members.items():
 		if id == local_id: continue
@@ -217,61 +226,83 @@ def run_game(screen, lobby):
 		peer.SetSteamID(id)
 		assert not peer.IsInvalid()
 
-	recv_msgs = (ctypes.c_void_p * 16)()
+	def onChatMsg(LobbyChatMsg):
+		buf = ctypes.create_string_buffer(512)
+		addr = ctypes.addressof(buf)
+		usr = steam.SteamID(0)
+		chatid = LobbyChatMsg.iChatID
+		##int GetLobbyChatEntry( CSteamID, int iChatID, CSteamID *pSteamIDUser, void *pvData, int cubData, EChatEntryType *peChatEntryType );
+		length = mm.GetLobbyChatEntry(lobby_id, chatid, usr.ptr, addr, len(buf), 0)
+		msg_str = bytes(buf[:length]).decode()
+		print(msg_str)
+		if msg_str == 'restart': reset()
+	_c = steam.OnLobbyChatMsg(onChatMsg)
+
+	def sendRestart():
+		payload = b'restart'
+		buf = ctypes.create_string_buffer(payload)
+		ok = mm.SendLobbyChatMsg(lobby_id, ctypes.addressof(buf), len(payload))
+		print("SendLobbyChatMsg:", ok)
+
 	def sync():
-		nonlocal recv_msgs, p1, p2, peer
+		nonlocal p1, p2, peer, food, game_over
 		# send state
 		values = [*p1.head, *p1.direction]  # head_x, head_y, dir_x, dir_y
-		payload = ",".join(map(str, values)).encode()
+		payload = ",".join(map(str, values))
+		payload = payload.encode()
 		buf = ctypes.create_string_buffer(payload)
+		flag  = steam.nSteamNetworkingSend_UnreliableNoNagle
 		# peer, packet*, packet size, communication flags, channel 
 		result = relay.SendMessageToUser(
 			peer,
 			ctypes.addressof(buf),
 			len(payload),
-			steam.nSteamNetworkingSend_ReliableNoNagle,
+			flag,
 			0,
 		)
 		if result != steam.EResult.OK:
-			print("SendMessageToUser failed:", result)
+			print("SendMessageToUser failed with k_EResult:", result)
+			quit_game()
 
+		steam.RunCallbacks()
+		
 		# retrieve peer state
 		tot = 0
 		while True:
+			recv_msgs = (ctypes.c_void_p * 16)()
 			n = relay.ReceiveMessagesOnChannel(0, ctypes.addressof(recv_msgs), len(recv_msgs))
 			tot += n
 			if n <= 0:break
 
-			msg_ptr = recv_msgs[i]
+			msg_ptr = recv_msgs[n-1]
 			msg = steam.SteamNetworkingMessage.from_ptr(msg_ptr)
 
 			data = steam.to_bytes(msg.pData, msg.cbSize)
 			text = data.decode()
-			print(text)
 			head_x, head_y, dir_x, dir_y = map(int, text.split(","))
 
 			p2.body[0] = (head_x, head_y)
 			p2.direction = (dir_x, dir_y)
 			#msg.Release()
 
-		print('received', tot, 'packets')
+		#print('received', tot, 'packets')
 		return tot
 
 	if is_multiplayer:
-		# wait for sync cycle to stabilize
+		# wait to receive 1 packet per tick
 		# there might be a better way to do this ...
 		i = 0
 		while sync() != 1:
 			clock.tick(FPS)
-			draw_centered_text(screen, big_font, 'syncing' + '.' * i, SCREEN_HEIGHT // 2, TEXT)
-			i = (i+1)%6
+			screen.fill(BG)
+			draw_centered_text(screen, big_font, 'syncing' + '.' * ((i//3) %4), SCREEN_HEIGHT // 2, TEXT)
+			i += 1
 			pygame.display.flip()
 			steam.RunCallbacks()
 
 	while True:
 		#print('', flush=True)
 		clock.tick(FPS)
-		steam.RunCallbacks()
 
 		if not game_over:
 			p1_will_eat = add_pos(p1.head, p1.direction) == food
@@ -295,7 +326,7 @@ def run_game(screen, lobby):
 					quit_game()
 
 				if game_over and event.key == pygame.K_SPACE:
-					p1, p2, food, game_over = reset_game(is_host)
+					sendRestart()
 
 				# Player 1: WASD
 				if event.key == pygame.K_w:
@@ -319,7 +350,7 @@ def run_game(screen, lobby):
 						p2.set_direction((1, 0))
 
 		if is_multiplayer:
-			sync()
+			while sync() == 0: time.sleep(0.0001)
 
 		screen.fill(BG)
 		draw_grid(screen)
