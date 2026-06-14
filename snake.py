@@ -199,7 +199,6 @@ def run_game(screen, lobby):
 	p2_name = 'Guest'
 
 	peer = steam.SteamNetworkingIdentity()
-	recv_msgs = (ctypes.c_void_p * 16)()
 
 	def accept_session(P2PSessionRequest):
 		print('accept_session')
@@ -215,9 +214,11 @@ def run_game(screen, lobby):
 		peer.SetSteamID(id)
 		assert not peer.IsInvalid()
 
+	recv_msgs = (ctypes.c_void_p * 16)()
 	while True:
 		print('', flush=True)
 		clock.tick(FPS)
+		steam.RunCallbacks()
 
 		if not game_over:
 			p1_will_eat = add_pos(p1.head, p1.direction) == food
@@ -281,6 +282,7 @@ def run_game(screen, lobby):
 		# retrieve peer state
 		while True:
 			n = relay.ReceiveMessagesOnChannel(0, ctypes.addressof(recv_msgs), len(recv_msgs))
+			print('received', n, 'packets')
 			if n <= 0:break
 
 			for i in range(n):
