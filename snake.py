@@ -196,7 +196,8 @@ def run_game(screen, lobby):
 	for id, name in members.items():
 		if id == local_id: continue
 		p2_name = name
-		peer.SetSteamID64(id)
+		peer.SetSteamID(id)
+		assert not peer.IsInvalid()
 
 	while True:
 		clock.tick(FPS)
@@ -272,7 +273,6 @@ def run_game(screen, lobby):
 				print(text)
 				head_x, head_y, dir_x, dir_y = map(int, text.split(","))
 
-				# TODO: check head is where it is expected to be
 				p2.body[0] = (head_x, head_y)
 				p2.direction = (dir_x, dir_y)
 
@@ -384,10 +384,10 @@ def get_lobby_members(lobby_id):
 
 @dataclass
 class Lobby:
-	lobby_id : int
-	owner_id : int
+	lobby_id : SteamId
+	owner_id : SteamId
 	name     : str
-	members  : dict
+	members  : dict[SteamId, str]
 
 def lobby_to_dict(lobby_id, default_name="Steam lobby"):
 	matchmaking = steam.SteamMatchmaking()
@@ -397,7 +397,7 @@ def lobby_to_dict(lobby_id, default_name="Steam lobby"):
 	name = matchmaking.GetLobbyData(lobby_id, "name")
 	if not name: name = default_name
 
-	return Lobby(int(lobby_id), owner_id, name, get_lobby_members(lobby_id) )
+	return Lobby(lobby_id, owner_id, name, get_lobby_members(lobby_id) )
 
 
 def create_lobby():
@@ -655,26 +655,26 @@ def run_lobby_menu(screen):
 # -----------------------------
 def main():
 	global clock, font, big_font, local_id
-	try:
-		steam.init()
-		pygame.init()
-		pygame.display.set_caption("Two Player Snake")
+	#try:
+	steam.init()
+	pygame.init()
+	pygame.display.set_caption("Two Player Snake")
 
-		screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT))
-		clock = pygame.time.Clock()
+	screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT))
+	clock = pygame.time.Clock()
 
-		font = pygame.font.SysFont(None, 30)
-		big_font = pygame.font.SysFont(None, 56)
+	font = pygame.font.SysFont(None, 30)
+	big_font = pygame.font.SysFont(None, 56)
 
-		local_id = steam.SteamUser().GetSteamID()
-		lobby = run_lobby_menu(screen)
+	local_id = steam.SteamUser().GetSteamID()
+	lobby = run_lobby_menu(screen)
 
-		run_game(screen, lobby)
+	run_game(screen, lobby)
 
-	except Exception as ex:
-		print('Error:', ex)
-	finally:
-		quit_game()
+	#except Exception as ex:
+	#	print('Error:', ex)
+	#finally:
+	#	quit_game()
 
 
 if __name__ == "__main__":
