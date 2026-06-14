@@ -40,6 +40,10 @@ def opposite(a, b):
 	return a[0] == -b[0] and a[1] == -b[1]
 
 
+def distance(a, b):
+	return abs(a[0]-b[0]) + abs(a[1]-b[1])
+
+
 def random_empty_cell(snakes):
 	occupied = set()
 	for snake in snakes:
@@ -52,12 +56,11 @@ def random_empty_cell(snakes):
 
 
 class Snake:
-	def __init__(self, body, direction, color, head_color, name):
+	def __init__(self, body, direction, color, head_color):
 		self.body = deque(body)
 		self.direction = direction
 		self.color = color
 		self.head_color = head_color
-		self.name = name
 		self.score = 0
 		self.alive = True
 
@@ -101,16 +104,14 @@ def reset_game(is_host:bool):
 		body=[(8, 12), (7, 12), (6, 12)],
 		direction=(1, 0),
 		color=P1_COLOR,
-		head_color=P1_HEAD,
-		name="Player 1",
+		head_color=P1_HEAD
 	)
 
 	p2 = Snake(
 		body=[(23, 12), (24, 12), (25, 12)],
 		direction=(-1, 0),
 		color=P2_COLOR,
-		head_color=P2_HEAD,
-		name="Player 2",
+		head_color=P2_HEAD
 	)
 
 	# problem : how do we assign player places ?
@@ -127,32 +128,20 @@ def out_of_bounds(pos):
 	return x < 0 or x >= GRID_WIDTH or y < 0 or y >= GRID_HEIGHT
 
 
-def resolve_collisions(p1, p2):
-	snakes = [p1, p2]
+def resolve_collisions(snakes):
 
 	# Wall collisions
 	for snake in snakes:
 		if out_of_bounds(snake.head):
 			snake.alive = False
 
-	# Self collisions
-	for snake in snakes:
-		if snake.head in list(snake.body)[1:]:
-			snake.alive = False
+	col = False
+	for snake1 in snakes:
+		for snake2 in snakes:
+			if snake1.head in list(snake2.body)[1:]:
+				snake1.alive = False
 
-	# Snake-vs-snake collisions
-	if p1.head in list(p2.body):
-		p1.alive = False
-
-	if p2.head in list(p1.body):
-		p2.alive = False
-
-	# Head-on collision
-	if p1.head == p2.head:
-		p1.alive = False
-		p2.alive = False
-
-	return not p1.alive or not p2.alive
+	return any( ( s for s in snakes if not s.alive ) )
 
 
 def draw_grid(screen):
@@ -198,7 +187,7 @@ def run_game(screen, lobby):
 
 	is_host = lobby.owner_id == local_id
 
-	p1, p2, food, game_over = reset_game(is_host)
+	p1, p2, food, game_over = (None, None, None, None)
 	def reset():
 		nonlocal p1, p2, food, game_over
 		p1, p2, food, game_over = reset_game(is_host)
@@ -235,14 +224,16 @@ def run_game(screen, lobby):
 		length = mm.GetLobbyChatEntry(lobby_id, chatid, usr.ptr, addr, len(buf), 0)
 		msg_str = bytes(buf[:length]).decode()
 		print(msg_str)
-		if msg_str == 'restart': reset()
+		if msg_str == 'restart':
+			reset()
+			clock.tick(FPS)
+			reset()
 	_c = steam.OnLobbyChatMsg(onChatMsg)
 
 	def sendRestart():
 		payload = b'restart'
 		buf = ctypes.create_string_buffer(payload)
 		ok = mm.SendLobbyChatMsg(lobby_id, ctypes.addressof(buf), len(payload))
-		print("SendLobbyChatMsg:", ok)
 
 	def sync():
 		nonlocal p1, p2, peer, food, game_over
@@ -280,7 +271,6 @@ def run_game(screen, lobby):
 			data = steam.to_bytes(msg.pData, msg.cbSize)
 			text = data.decode()
 			head_x, head_y, dir_x, dir_y = map(int, text.split(","))
-
 			p2.body[0] = (head_x, head_y)
 			p2.direction = (dir_x, dir_y)
 			#msg.Release()
@@ -288,6 +278,8 @@ def run_game(screen, lobby):
 		#print('received', tot, 'packets')
 		return tot
 
+	reset()
+	
 	if is_multiplayer:
 		# wait to receive 1 packet per tick
 		# there might be a better way to do this ...
@@ -314,7 +306,7 @@ def run_game(screen, lobby):
 			if p1_will_eat or p2_will_eat:
 				food = random_empty_cell([p1, p2])
 
-			game_over = resolve_collisions(p1, p2)
+			game_over = resolve_collisions([p1, p2])
 
 
 		for event in pygame.event.get():
@@ -326,7 +318,10 @@ def run_game(screen, lobby):
 					quit_game()
 
 				if game_over and event.key == pygame.K_SPACE:
-					sendRestart()
+					if is_multiplayer:
+						sendRestart()
+					else:
+						reset()
 
 				# Player 1: WASD
 				if event.key == pygame.K_w:
