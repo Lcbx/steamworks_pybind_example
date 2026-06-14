@@ -179,7 +179,15 @@ def draw_centered_text(screen, font, text, y, color=TEXT):
 
 
 def run_game(screen, lobby):
-	steam.SteamNetworkingUtils().InitRelayNetworkAccess()
+	#netUtils = steam.SteamNetworkingUtils()
+	#status = steam.SteamRelayNetworkStatus()
+	#t = time.time() + 3.0
+	#while ((availability := netUtils.GetRelayNetworkStatus(status.ptr)) >= 0
+	#	and availability != steam.ESteamNetworkingAvailability.Current
+	#	and time.time() < t):
+	#	time.sleep(0.05)
+	#print("availability", availability, status.debugMsg)
+
 	relay = steam.SteamNetworkingMessages()
 	members = lobby.members
 
@@ -194,6 +202,7 @@ def run_game(screen, lobby):
 	recv_msgs = (ctypes.c_void_p * 16)()
 
 	def accept_session(P2PSessionRequest_t):
+		print('accept_session')
 		id = P2PSessionRequest_t.steamIDRemote
 		if id in members: relay.AcceptSessionWithUser(id)
 
@@ -201,6 +210,7 @@ def run_game(screen, lobby):
 
 	for id, name in members.items():
 		if id == local_id: continue
+		print('peer is', name)
 		p2_name = name
 		peer.SetSteamID(id)
 		assert not peer.IsInvalid()
@@ -384,7 +394,7 @@ def get_lobby_members(lobby_id):
 	members = {}
 
 	for i in range(count):
-		member_id = matchmaking.GetLobbyMemberByIndex(lobby_id, i)
+		member_id = matchmaking.GetLobbyMemberByIndex(lobby_id, i) # CSteamID
 		member_name = friends.GetFriendPersonaName(member_id)
 		members[member_id] = member_name
 
@@ -667,6 +677,10 @@ def main():
 	steam.init()
 	pygame.init()
 	pygame.display.set_caption("Two Player Snake")
+
+	# start this asap
+	netUtils = steam.SteamNetworkingUtils()
+	netUtils.InitRelayNetworkAccess()
 
 	screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT))
 	clock = pygame.time.Clock()
